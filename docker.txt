@@ -1,0 +1,8 @@
+
+sudo docker run -p 3000:3000 -v ./storage:/app/storage -d roybebru/wechats-docker
+sudo docker run -p 3000:3000 -v ./storage:/app/storage    roybebru/wechats-docker
+
+sudo docker build . -t roybebru/wechats-docker
+
+sudo docker pull roybebru/wechats-docker
+
