@@ -9,7 +9,6 @@ import logging
 from pathlib import Path
 import pickle
 import socket
-import sys
 from threading import Thread
 from urllib.parse import urlparse, parse_qs, unquote_plus
 
@@ -20,21 +19,29 @@ FILE_DATA = "./storage/data.json"
 
 
 #{{{ UDP SERVER
-def packet_encode(entity):
+def packet_encode(entity) -> bytes:
     return base64.b64encode(pickle.dumps(entity))
 
-def packet_decode(entity):
+def packet_decode(entity: bytes):
     return pickle.loads(base64.b64decode(entity))
 
-udpsock_servers_keep_running = True
+udpsock_server_keep_running = True
 
-def udpsock_server(udp_port, udpservsock, fh):
+def udpsock_server(udpservsock: socket, fh) -> None:
+    """ UDP server.
+    Listen data stream, collect data to buf. Next Base64 encoded block
+    is recognized by b'\t' delimiter at the end of block. Decoded Base64
+    block is pickle serialized python object. Deserialized object have to be
+    included as part of dictionary which is saved to already opened to write
+    file fh. Flag udpsock_server_keep_running minimum each second is checked to
+    determine if UDP server must be closed.
+    """
     buf = b""
     udpservsock.settimeout(1)
-    while udpsock_servers_keep_running:
+    while udpsock_server_keep_running:
         try:
             data, addr = udpservsock.recvfrom(32000)
-        except TimeoutError as e:
+        except TimeoutError:
             continue
         logging.debug(f"Socket server: From {addr} Received message: {data}")
         buf += data
@@ -52,20 +59,23 @@ def udpsock_server(udp_port, udpservsock, fh):
 
 
 class Ht11(BaseHTTPRequestHandler):
+    # Parameters how to manage persistent HTTP/1.1 open connection
     KEEPALIVE = "timeout=5, max=30"
-#   KEEPALIVE = ""
+    # Content-Type MIME headers by extensions
     CONT_TYPES = { '.css': 'text/css'
                  , '.html': 'text/html'
                  , '.png': 'image/x-png'
                  , '.ico': 'image/x-icon'
                  }
+    # Web server root dir is the dir of the progran file
     path_root_dir = Path(__file__).parent
+    # Next free session id
     sid_last = 1
-    # Format:
+    # Current known session register. Format:
     # sid_reg[(sid] =
     #     [ (ip, port), username, [(from_iport, username, msg), ...] ]
     sid_reg = {}
-    # Format:
+    # Current not sent message list. Format:
     # [ (from_ipport, username, addresee, msg), ...]
     msg_list = []
 
@@ -79,6 +89,7 @@ class Ht11(BaseHTTPRequestHandler):
 
     @staticmethod
     def find_resource(path):
+        """Determine file to be sent as response"""
         path = path[1:]
         pathfile = Ht11.path_root_dir / (path + ".gz")
         if Path.exists(pathfile):
@@ -91,8 +102,6 @@ class Ht11(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
-
-        # print(f"Socket: {self.server.socket}; id={id(self.server.socket)}")
 
         # Get the request path, this new path does not have the query string
         path = parsed.path
@@ -128,6 +137,9 @@ class Ht11(BaseHTTPRequestHandler):
                           f"file {fullfilename}: " + str(e))
 
     def message_engine(self, value_map):
+        """
+        Message handler
+        """
         ## session_id | username | To do
         ##---------------------------------------------------------------------
         ##     0      | ''       | create sid_req element with sid_last++
@@ -193,6 +205,7 @@ class Ht11(BaseHTTPRequestHandler):
 
         #{{{ UDP SERVER AS LOGGER
         if message != "":
+            # b'\t" is the data block delimiter
             Ht11.udpsock.sendto(packet_encode({
                     "address": self.clipport(),
                     "username": username,
@@ -276,14 +289,19 @@ class Ht11(BaseHTTPRequestHandler):
 
 
 def httpd_server(web_port, udp_port):
-    global udpsock_servers_keep_running
+    """
+    Run HTTP server and UDP server. UDP socket and file
+    to save history is open here and sending as args here
+    to avoid synchronization issues at start.
+    """
+    global udpsock_server_keep_running
 
     Ht11.protocol_version = "HTTP/1.1"
     Ht11.udpsock = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
 
     try:
         udpservsock = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
-        udpservsock.bind(("127.0.0.1", UDP_PORT))
+        udpservsock.bind(("127.0.0.1", udp_port))
     except Exception as e:
         logging.error("Udp server socket error: " + str(e))
         exit(1)
@@ -297,17 +315,21 @@ def httpd_server(web_port, udp_port):
     try:
         httpd = ThreadingHTTPServer(('0.0.0.0', web_port), Ht11)
 
-        th = Thread(target=udpsock_server, args=(udp_port, udpservsock, fh))
+        th = Thread(target=udpsock_server, args=(udpservsock, fh))
         th.start()
 
         httpd.serve_forever()
 
-    except (OSError, PermissionError, OverflowError, KeyboardInterrupt) as e:
-        udpsock_servers_keep_running = False
-        httpd.server_close()
+    except (OSError, PermissionError, OverflowError, KeyboardInterrupt):
+        udpsock_server_keep_running = False
+        httpd.server_close() # do not forget call it
         return
 
 def main():
+    """
+    Default ports can be changed with help of command line arguments.
+    HTTP server is listened request in all available interfaces.
+    """
     parser = argparse.ArgumentParser(description='Process some integers.')
     parser.add_argument('port', metavar='T', type=int, nargs='?',
                     help='HTTP web-server port')
@@ -327,3 +349,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

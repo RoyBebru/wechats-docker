@@ -4,5 +4,7 @@ sudo docker run -p 3000:3000 -v ./storage:/app/storage    roybebru/wechats-docke
 
 sudo docker build . -t roybebru/wechats-docker
 
+sudo docker push roybebru/wechats-docker:latest
+
 sudo docker pull roybebru/wechats-docker
 
